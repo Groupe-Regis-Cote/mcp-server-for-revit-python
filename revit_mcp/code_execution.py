@@ -10,8 +10,26 @@ import sys
 import traceback
 from StringIO import StringIO
 
+from utils import normalize_string
+
 # Standard logger setup
 logger = logging.getLogger(__name__)
+
+
+def _safe_print_str(arg):
+    """Convert a print() argument to unicode without corrupting accents.
+
+    IronPython 2's str() on a unicode value containing non-ASCII characters
+    re-encodes it through the system default codec (cp1252/ascii) instead of
+    UTF-8, which silently mangles accented characters (e.g. the 'é' in
+    'TramCité' becomes byte 0xE9 instead of the UTF-8 sequence 0xC3 0xA9).
+    That corrupted byte string then crashes pyRevit's JSON encoder later on.
+    Routing every argument through normalize_string() keeps it as proper
+    unicode end-to-end.
+    """
+    if isinstance(arg, (unicode, str)):
+        return normalize_string(arg)
+    return normalize_string(unicode(arg))
 
 
 def register_code_execution_routes(api):
@@ -37,7 +55,7 @@ def register_code_execution_routes(api):
                 else request.data
             )
             code_to_execute = data.get("code", "")
-            description = data.get("description", "Code execution")
+            description = normalize_string(data.get("description", "Code execution"))
 
             if not code_to_execute:
                 return routes.make_response(
@@ -57,7 +75,7 @@ def register_code_execution_routes(api):
                 "revit": revit,
                 "__builtins__": __builtins__,
                 "print": lambda *args: captured_output.write(
-                    " ".join(str(arg) for arg in args) + "\n"
+                    u" ".join(_safe_print_str(arg) for arg in args) + u"\n"
                 ),
             }
 
@@ -65,7 +83,7 @@ def register_code_execution_routes(api):
                 exec(code_to_execute, namespace)
 
                 sys.stdout = old_stdout
-                output = captured_output.getvalue()
+                output = normalize_string(captured_output.getvalue())
                 captured_output.close()
 
                 return routes.make_response(
@@ -77,19 +95,19 @@ def register_code_execution_routes(api):
                             if output
                             else "Code executed successfully (no output)"
                         ),
-                        "code_executed": code_to_execute,
+                        "code_executed": normalize_string(code_to_execute),
                     }
                 )
 
             except Exception as exec_error:
                 sys.stdout = old_stdout
-                partial_output = captured_output.getvalue()
+                partial_output = normalize_string(captured_output.getvalue())
                 captured_output.close()
 
-                error_traceback = traceback.format_exc()
+                error_traceback = normalize_string(traceback.format_exc())
                 error_type = type(exec_error).__name__
-                error_msg = str(exec_error)
-                enhanced_message = "{}: {}".format(error_type, error_msg)
+                error_msg = normalize_string(str(exec_error))
+                enhanced_message = u"{}: {}".format(error_type, error_msg)
 
                 hints = []
                 if error_type == "AttributeError":
@@ -122,7 +140,7 @@ def register_code_execution_routes(api):
                     "error": enhanced_message,
                     "error_type": error_type,
                     "traceback": error_traceback,
-                    "code_attempted": code_to_execute,
+                    "code_attempted": normalize_string(code_to_execute),
                 }
 
                 if partial_output:
@@ -135,6 +153,8 @@ def register_code_execution_routes(api):
 
         except Exception as e:
             logger.error("Execute code request failed: {}".format(str(e)))
-            return routes.make_response(data={"error": str(e)}, status=500)
+            return routes.make_response(
+                data={"error": normalize_string(str(e))}, status=500
+            )
 
     logger.info("Code execution routes registered successfully.")
